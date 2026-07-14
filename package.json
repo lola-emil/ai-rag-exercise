@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "openai": "^6.46.0",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.22.0"
+  }
+}
