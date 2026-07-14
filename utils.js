@@ -14,8 +14,9 @@ function chunkText(text, chunkSize = 500, overlap = 50) {
 }
 
 function chunkBySection(text) {
-    const sections = text.split(/(?=^## )/gm);
-    return sections.filter(s => s.trim().length);
+    return text
+        .split(/(?=^[a-z]\.\s+)/gm)
+        .filter(Boolean);
 }
 
 

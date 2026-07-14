@@ -11,6 +11,11 @@ const client = new OpenAI({
     apiKey: process.env.AI_API_KEY,
 });
 
+const rerankClient = new OpenAI({
+    baseURL: "https://dashscope-intl.aliyuncs.com/compatible-api/v1",
+    apiKey: process.env.AI_API_KEY,
+});
+
 const CHAT_MODEL = process.env.CHAT_MODEL;
 const EMBED_MODEL = process.env.EMBED_MODEL;
 
@@ -21,6 +26,26 @@ const pool = new pg.Pool({
     password: process.env.DB_PASSWORD,
     port: 5432,
 });
+
+async function rerankDocuments(query, documentsWithMeta, topN = 3) {
+    const documents = documentsWithMeta.map(d => d.text);
+
+    const response = await rerankClient.post("/reranks", {
+        body: {
+            model: "qwen3-rerank",
+            query: query,
+            documents: documents,
+            top_n: topN,
+        },
+    });
+
+    return response.results.map(result => ({
+        text: documents[result.index],
+        source_file: documentsWithMeta[result.index].source_file,
+        chunk_index: documentsWithMeta[result.index].chunk_index,
+        score: result.relevance_score,
+    }));
+}
 
 async function chat() {
     let conversationHistory = [];
@@ -49,12 +74,13 @@ async function chat() {
                 const vectorString = formatVectorForPgvector(queryVector);
 
                 const result = await pool.query(
-                    `SELECT text, 1 - (embedding <=> $1) AS similarity 
-                     FROM documents 
-                     ORDER BY embedding <=> $1 
-                     LIMIT 3`,
+                    `SELECT text, source_file, chunk_index, 1 - (embedding <=> $1) AS similarity 
+                    FROM documents 
+                    ORDER BY embedding <=> $1 
+                    LIMIT 10`,
                     [vectorString]
                 );
+
 
                 if (result.rows.length === 0) {
                     console.log('\n No documents found in database. Run `node ingest.js` first.\n');
@@ -62,7 +88,18 @@ async function chat() {
                     return;
                 }
 
-                const context = result.rows.map(r => r.text).join('\n\n');
+
+                console.log('Reranking documents...');
+
+                const reranked = await rerankDocuments(question, result.rows, 3);
+
+                const context = reranked.map((r, i) => `
+                    ${i + 1}. ${r.source_file} 
+                    (
+                        chunk ${r.chunk_index}, 
+                        score: ${r.score.toFixed(3)}
+                    ) 
+                    text: ${r.text}`).join('\n\n---\n\n');
 
                 const messages = [
                     {
@@ -110,6 +147,7 @@ async function chat() {
 
                 console.log('\n');
             } catch (err) {
+                console.log(err);
                 console.error('\n❌ Error:', err.message);
             }
 

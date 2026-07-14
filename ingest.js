@@ -1,5 +1,5 @@
-import { readFile, readdir } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { readFile, readdir, stat } from "node:fs/promises"
+import { join, resolve, extname, basename } from "node:path"
 import OpenAI from 'openai';
 import { PDFParse } from "pdf-parse";
 import pg from 'pg';
@@ -31,7 +31,9 @@ const pool = new pg.Pool({
 });
 
 async function ingest() {
-    const docs = await readdir(docsPath);
+    let docs = await readdir(docsPath);
+    docs = docs.filter(doc => extname(doc) == '.pdf');
+
 
     console.log('Chunking and Embedding text...');
 
@@ -43,12 +45,20 @@ async function ingest() {
         console.log('Cleared existing documents.');
 
         for (const doc of docs) {
-            const buffer = await readFile(resolve(docsPath, doc));
+            const filePath = resolve(docsPath, doc);
+            const stats = await stat(filePath);
+            const fileName = basename(filePath);
+            const fileSize = stats.size;
+
+            const buffer = await readFile(filePath);
             const pdf = new PDFParse({ data: buffer });
 
             const result = await pdf.getText();
             const text = result.text;
             const chunks = chunkBySection(text);
+            const totalChunks = chunks.length;
+
+            let index = 0;
 
             for (const chunk of chunks) {
                 if (chunk.trim().length < 10) continue;
@@ -60,15 +70,31 @@ async function ingest() {
 
                 const embedding = response.data[0].embedding;
                 const vectorString = formatVectorForPgvector(embedding);
+
                 await pool.query(
-                    'INSERT INTO documents (text, embedding) VALUES ($1, $2)',
-                    [chunk, vectorString]
+                    `INSERT INTO documents (text, embedding, source_file, chunk_index, total_chunks, file_size_bytes, metadata) 
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [
+                        chunk,
+                        vectorString,
+                        fileName,
+                        index,
+                        totalChunks,
+                        fileSize,
+                        JSON.stringify({
+                            full_path: resolve(filePath),
+                            extension: extname(filePath),
+                        })
+                    ]
                 );
 
+                index++;
                 count++;
                 console.log(`Stored chunk ${count}: "${chunk.substring(0, 50)}..."`);
 
             }
+
+            index = 0;
         }
 
         await new Promise(resolve => setTimeout(resolve, 100));
