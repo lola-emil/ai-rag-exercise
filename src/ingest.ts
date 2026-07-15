@@ -1,19 +1,25 @@
-import { readFile, readdir, stat } from "node:fs/promises"
-import { join, resolve, extname, basename } from "node:path"
+import { readdir, stat } from "node:fs/promises";
+import { resolve, extname, basename } from "node:path";
 import OpenAI from 'openai';
-import { PDFParse } from "pdf-parse";
+import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import pg from 'pg';
-import { config } from 'dotenv'
+import { config } from 'dotenv';
 import {
-    formatVectorForPgvector,
-    chunkText,
-    chunkBySection,
-} from "./utils.js"
+    formatVectorForPgvector
+} from "./utils.js";
 
 config()
 
-const __dirname = import.meta.dirname;
-const docsPath = resolve(__dirname, './docs');
+if (!process.env.AI_BASE_URL ||
+    !process.env.AI_API_KEY ||
+    !process.env.CHAT_MODEL ||
+    !process.env.EMBED_MODEL
+) {
+    console.log(".env file might be missing")
+    process.exit(1);
+}
+
+const docsPath = resolve(__dirname, '../docs');
 
 const client = new OpenAI({
     baseURL: process.env.AI_BASE_URL,
@@ -31,55 +37,54 @@ const pool = new pg.Pool({
 });
 
 async function ingest() {
-    let docs = await readdir(docsPath);
-    docs = docs.filter(doc => extname(doc) == '.pdf');
+    let files = await readdir(docsPath);
+    files = files.filter(doc => extname(doc) == '.pdf');
 
 
     console.log('Chunking and Embedding text...');
-
-    let count = 0;
-
     try {
+
+        let count = 0;
+
         // Clear existing data for a fresh start
         await pool.query('DELETE FROM documents');
         console.log('Cleared existing documents.');
 
-        for (const doc of docs) {
+        for (const doc of files) {
             const filePath = resolve(docsPath, doc);
             const stats = await stat(filePath);
             const fileName = basename(filePath);
             const fileSize = stats.size;
 
-            const buffer = await readFile(filePath);
-            const pdf = new PDFParse({ data: buffer });
-
-            const result = await pdf.getText();
-            const text = result.text;
-            const chunks = chunkBySection(text);
-            const totalChunks = chunks.length;
+            const loader = new PDFLoader(filePath);
+            const documents = await loader.load();
 
             let index = 0;
 
-            for (const chunk of chunks) {
-                if (chunk.trim().length < 10) continue;
+            for (const docu of documents) {
 
                 const response = await client.embeddings.create({
                     model: EMBED_MODEL,
-                    input: chunk,
+                    input: docu.pageContent,
                 });
 
+                if (!response.data[0]) {
+                    console.log("\n No embedding returned \n")
+                    continue
+                }
                 const embedding = response.data[0].embedding;
                 const vectorString = formatVectorForPgvector(embedding);
+
 
                 await pool.query(
                     `INSERT INTO documents (text, embedding, source_file, chunk_index, total_chunks, file_size_bytes, metadata) 
                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                     [
-                        chunk,
+                        docu.pageContent,
                         vectorString,
                         fileName,
                         index,
-                        totalChunks,
+                        documents.length,
                         fileSize,
                         JSON.stringify({
                             full_path: resolve(filePath),
@@ -90,7 +95,7 @@ async function ingest() {
 
                 index++;
                 count++;
-                console.log(`Stored chunk ${count}: "${chunk.substring(0, 50)}..."`);
+                console.log(`Stored chunk ${count}: "${docu.pageContent.substring(0, 50)}..."`);
 
             }
 
@@ -100,7 +105,7 @@ async function ingest() {
         await new Promise(resolve => setTimeout(resolve, 100));
 
         console.log(`\nIngestion complete! ${count} chunks stored in pgvector.`);
-    } catch (err) {
+    } catch (err: any) {
         console.error(err);
         console.error('Error during ingestion:', err.message);
     } finally {

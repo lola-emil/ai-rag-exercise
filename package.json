@@ -1,9 +1,22 @@
 {
-  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "ingest": "node ./dist/ingest.js",
+    "start": "node ."
+  },
   "dependencies": {
+    "@langchain/community": "^1.1.29",
+    "@langchain/core": "^1.2.3",
     "dotenv": "^17.4.2",
+    "langchain": "^1.5.3",
     "openai": "^6.46.0",
     "pdf-parse": "^2.4.5",
     "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "typescript": "^7.0.2"
   }
 }
